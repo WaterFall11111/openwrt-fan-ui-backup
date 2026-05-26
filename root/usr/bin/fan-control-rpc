@@ -1,0 +1,191 @@
+#!/bin/sh
+
+CFG="fancontrol.main"
+
+read_cfg() {
+	uci -q get "$CFG.$1"
+}
+
+read_file() {
+	sed -n '1p' "$1" 2>/dev/null
+}
+
+write_file() {
+	printf '%s\n' "$2" >"$1" 2>/dev/null
+}
+
+is_uint() {
+	case "$1" in
+		''|*[!0-9]*)
+			return 1
+			;;
+		*)
+			return 0
+			;;
+	esac
+}
+
+clamp_pwm() {
+	local v="$1"
+	if ! is_uint "$v"; then
+		echo "0"
+		return
+	fi
+	if [ "$v" -lt 0 ]; then
+		echo "0"
+	elif [ "$v" -gt 255 ]; then
+		echo "255"
+	else
+		echo "$v"
+	fi
+}
+
+json_escape() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+get_mode_flag() {
+	local mode
+	mode="$(read_cfg manual_mode)"
+	[ "$mode" = "1" ] && echo "1" || echo "0"
+}
+
+set_auto_mode() {
+	local pwm_enable_file pwm_enable_auto
+	pwm_enable_file="$(read_cfg pwm_enable_file)"
+	pwm_enable_auto="$(read_cfg pwm_enable_auto_value)"
+	[ -n "$pwm_enable_auto" ] || pwm_enable_auto="2"
+
+	if [ -n "$pwm_enable_file" ]; then
+		write_file "$pwm_enable_file" "$pwm_enable_auto"
+	fi
+
+	uci -q set "$CFG.manual_mode=0"
+	uci -q commit fancontrol
+}
+
+set_manual_pwm() {
+	local value="$1"
+	local pwm_file pwm_enable_file pwm_enable_manual
+	value="$(clamp_pwm "$value")"
+	pwm_file="$(read_cfg fan_pwm_file)"
+	pwm_enable_file="$(read_cfg pwm_enable_file)"
+	pwm_enable_manual="$(read_cfg pwm_enable_manual_value)"
+	[ -n "$pwm_enable_manual" ] || pwm_enable_manual="1"
+
+	if [ -n "$pwm_enable_file" ]; then
+		write_file "$pwm_enable_file" "$pwm_enable_manual"
+	fi
+	if [ -n "$pwm_file" ]; then
+		write_file "$pwm_file" "$value"
+	fi
+
+	uci -q set "$CFG.manual_mode=1"
+	uci -q set "$CFG.manual_pwm=$value"
+	uci -q commit fancontrol
+}
+
+status_json() {
+	local enabled manual_mode thermal_file fan_pwm_file pwm_enable_file temp_div
+	local start_temp max_speed quiet_pwm balanced_pwm turbo_pwm manual_pwm
+	local pwm_enable_manual_value pwm_enable_auto_value
+	local raw_temp current_pwm temp_c
+
+	enabled="$(read_cfg enabled)"
+	manual_mode="$(get_mode_flag)"
+	thermal_file="$(read_cfg thermal_file)"
+	fan_pwm_file="$(read_cfg fan_pwm_file)"
+	pwm_enable_file="$(read_cfg pwm_enable_file)"
+	temp_div="$(read_cfg temp_div)"
+	start_temp="$(read_cfg start_temp)"
+	max_speed="$(read_cfg max_speed)"
+	quiet_pwm="$(read_cfg quiet_pwm)"
+	balanced_pwm="$(read_cfg balanced_pwm)"
+	turbo_pwm="$(read_cfg turbo_pwm)"
+	manual_pwm="$(read_cfg manual_pwm)"
+	pwm_enable_manual_value="$(read_cfg pwm_enable_manual_value)"
+	pwm_enable_auto_value="$(read_cfg pwm_enable_auto_value)"
+
+	[ -n "$enabled" ] || enabled="1"
+	[ -n "$temp_div" ] || temp_div="1000"
+	[ -n "$start_temp" ] || start_temp="45"
+	[ -n "$max_speed" ] || max_speed="255"
+	[ -n "$quiet_pwm" ] || quiet_pwm="80"
+	[ -n "$balanced_pwm" ] || balanced_pwm="140"
+	[ -n "$turbo_pwm" ] || turbo_pwm="220"
+	[ -n "$manual_pwm" ] || manual_pwm="140"
+	[ -n "$pwm_enable_manual_value" ] || pwm_enable_manual_value="1"
+	[ -n "$pwm_enable_auto_value" ] || pwm_enable_auto_value="2"
+
+	raw_temp=""
+	current_pwm=""
+	temp_c=""
+
+	if [ -n "$thermal_file" ]; then
+		raw_temp="$(read_file "$thermal_file")"
+	fi
+	if [ -n "$fan_pwm_file" ]; then
+		current_pwm="$(read_file "$fan_pwm_file")"
+	fi
+
+	if is_uint "$raw_temp" && is_uint "$temp_div" && [ "$temp_div" -gt 0 ]; then
+		temp_c="$(awk -v t="$raw_temp" -v d="$temp_div" 'BEGIN { printf "%.1f", t / d }')"
+	fi
+
+	printf '{'
+	printf '"enabled":"%s",' "$(json_escape "$enabled")"
+	printf '"manual_mode":"%s",' "$(json_escape "$manual_mode")"
+	printf '"thermal_file":"%s",' "$(json_escape "$thermal_file")"
+	printf '"fan_pwm_file":"%s",' "$(json_escape "$fan_pwm_file")"
+	printf '"pwm_enable_file":"%s",' "$(json_escape "$pwm_enable_file")"
+	printf '"temp_div":"%s",' "$(json_escape "$temp_div")"
+	printf '"start_temp":"%s",' "$(json_escape "$start_temp")"
+	printf '"max_speed":"%s",' "$(json_escape "$max_speed")"
+	printf '"quiet_pwm":"%s",' "$(json_escape "$quiet_pwm")"
+	printf '"balanced_pwm":"%s",' "$(json_escape "$balanced_pwm")"
+	printf '"turbo_pwm":"%s",' "$(json_escape "$turbo_pwm")"
+	printf '"manual_pwm":"%s",' "$(json_escape "$manual_pwm")"
+	printf '"pwm_enable_manual_value":"%s",' "$(json_escape "$pwm_enable_manual_value")"
+	printf '"pwm_enable_auto_value":"%s",' "$(json_escape "$pwm_enable_auto_value")"
+	printf '"raw_temp":"%s",' "$(json_escape "$raw_temp")"
+	printf '"temp_c":"%s",' "$(json_escape "$temp_c")"
+	printf '"current_pwm":"%s"' "$(json_escape "$current_pwm")"
+	printf '}\n'
+}
+
+case "$1" in
+	status)
+		status_json
+		;;
+	apply_auto)
+		set_auto_mode
+		status_json
+		;;
+	apply_manual)
+		set_manual_pwm "$2"
+		status_json
+		;;
+	preset)
+		case "$2" in
+			quiet)
+				set_manual_pwm "$(read_cfg quiet_pwm)"
+				;;
+			balance|balanced)
+				set_manual_pwm "$(read_cfg balanced_pwm)"
+				;;
+			turbo)
+				set_manual_pwm "$(read_cfg turbo_pwm)"
+				;;
+			*)
+				printf '{"error":"unknown preset"}\n'
+				exit 1
+				;;
+		esac
+		status_json
+		;;
+	*)
+		printf '{"error":"usage: status|apply_auto|apply_manual <0..255>|preset quiet|balanced|turbo"}\n'
+		exit 1
+		;;
+esac
+

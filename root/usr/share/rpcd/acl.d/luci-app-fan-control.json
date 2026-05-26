@@ -1,0 +1,24 @@
+{
+	"luci-app-fan-control": {
+		"description": "Fan control panel for OpenWrt",
+		"read": {
+			"uci": [ "fancontrol" ],
+			"ubus": {
+				"file": [ "exec", "stat" ]
+			},
+			"file": {
+				"/usr/bin/fan-control-rpc": [ "exec" ]
+			}
+		},
+		"write": {
+			"uci": [ "fancontrol" ],
+			"ubus": {
+				"file": [ "exec", "write" ]
+			},
+			"file": {
+				"/usr/bin/fan-control-rpc": [ "exec" ]
+			}
+		}
+	}
+}
+
